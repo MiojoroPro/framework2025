@@ -6,7 +6,7 @@ set SRC=src\main\java
 set OUT=out
 set JAR_NAME=sprint-framework.jar
 set SERVLET_LIB=C:\Bossy\L3\S5\frameworkS5\lib\servlet-api.jar
-set JDK_BIN="C:\Program Files\Java\jdk-24\bin"
+set JDK_BIN="C:\Users\miojo\AppData\Local\Programs\Eclipse Adoptium\jdk-17.0.16.8-hotspot\bin"
 
 echo ==========================
 echo  Compilation FrontServlet
