@@ -7,6 +7,7 @@ import java.util.*;
 import javax.servlet.*;
 import javax.servlet.http.*;
 import etu.sprint.framework.annotation.*;
+import etu.sprint.framework.controller.Controller;
 public class FrontServlet extends HttpServlet {
 
     // Nouveaux ajouts
@@ -22,6 +23,21 @@ public class FrontServlet extends HttpServlet {
             List<Class<?>> classes = getClasses(packageToScan);
 
             for (Class<?> cls : classes) {
+                // Detect if class is annotated as a Controller or if it contains any @MyUrl methods
+                boolean isController = cls.isAnnotationPresent(Controller.class);
+                boolean hasMyUrlMethod = false;
+                for (Method checkM : cls.getDeclaredMethods()) {
+                    if (checkM.isAnnotationPresent(MyUrl.class)) {
+                        hasMyUrlMethod = true;
+                        break;
+                    }
+                }
+
+                // Skip classes that are neither annotated nor contain @MyUrl methods
+                if (!isController && !hasMyUrlMethod) {
+                    continue;
+                }
+
                 Object instance = cls.getDeclaredConstructor().newInstance();
 
                 for (Method m : cls.getDeclaredMethods()) {
@@ -30,7 +46,7 @@ public class FrontServlet extends HttpServlet {
                         String key = myUrl.value();
                         urlMappings.put(key, m);
                         controllerInstances.put(key, instance);
-                        System.out.println("Mapping ajouté : " + key + " -> " + m.getName());
+                        System.out.println("Mapping ajouté : " + key + " -> " + m.getName() + " (controller: " + cls.getName() + ")");
                     }
                 }
             }
