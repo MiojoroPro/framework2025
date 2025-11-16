@@ -23,8 +23,8 @@ public class FrontServlet extends HttpServlet {
     @Override
     protected void service(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
-    response.setContentType("text/html; charset=UTF-8");
-    response.setCharacterEncoding("UTF-8");
+        response.setContentType("text/html; charset=UTF-8");
+        response.setCharacterEncoding("UTF-8");
 
         if (!isScanned) {
             synchronized (this) {
@@ -55,21 +55,21 @@ public class FrontServlet extends HttpServlet {
             try {
                 Object controller = controllerInstances.get(path);
                 Class<?> controllerClass = controller.getClass();
-                Object result = m.invoke(controller);
-                response.setContentType("text/html; charset=UTF-8");
-                response.setCharacterEncoding("UTF-8");
 
-                out.println("<html><body>");
-                out.println("<h2>Résultat du contrôleur :</h2>");
-
-                // 🟩 Vérification : si la classe est annotée avec @Controller
                 if (controllerClass.isAnnotationPresent(Controller.class)) {
-                    out.println("<p>controller." + controllerClass.getSimpleName() + " : " + m.getName() + "</p>");
-                } else {
-                    out.println("<p>" + result + "</p>");
-                }
+                    m.setAccessible(true);
+                    Object result = m.invoke(controller);
 
-                out.println("</body></html>");
+                    out.println("<html><body>");
+                    out.println("<h2>Résultat du contrôleur :</h2>");
+                    out.println("<p><strong>Contrôleur :</strong> " + controllerClass.getSimpleName() + "</p>");
+                    out.println("<p><strong>Méthode :</strong> " + m.getName() + "</p>");
+                    out.println("<p><strong>Résultat :</strong> " + result + "</p>");
+                    out.println("</body></html>");
+                } else {
+                    // Si la classe n'est pas annotée @Controller, on ne fait rien
+                    response.sendError(HttpServletResponse.SC_NOT_FOUND, "Page non trouvée");
+                }
 
             } catch (Exception e) {
                 e.printStackTrace(out);
@@ -86,17 +86,7 @@ public class FrontServlet extends HttpServlet {
 
     private void scanAndRegisterControllers(List<Class<?>> classes) throws Exception {
         for (Class<?> cls : classes) {
-            boolean isController = cls.isAnnotationPresent(Controller.class);
-            boolean hasMyUrlMethod = false;
-
-            for (Method checkM : cls.getDeclaredMethods()) {
-                if (checkM.isAnnotationPresent(MyUrl.class)) {
-                    hasMyUrlMethod = true;
-                    break;
-                }
-            }
-
-            if (!isController && !hasMyUrlMethod) continue;
+            if (!cls.isAnnotationPresent(Controller.class)) continue; // On ne prend que les contrôleurs
 
             Object instance = cls.getDeclaredConstructor().newInstance();
 
