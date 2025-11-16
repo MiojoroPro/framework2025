@@ -1,5 +1,6 @@
 package etu.test.controller;
 
+import etu.sprint.framework.ModelView;
 import etu.sprint.framework.annotation.MyUrl;
 import etu.sprint.framework.controller.Controller;
 
@@ -7,8 +8,10 @@ import etu.sprint.framework.controller.Controller;
 public class HelloController {
 
     @MyUrl("/hello")
-    public String sayHello() {
-        return "Salut depuis ton framework !";
+    public ModelView sayHello() {
+        ModelView mv = new ModelView("hello.jsp");
+        mv.addItem("message", "Salut depuis ton framework !");
+        return mv;
     }
 
     @MyUrl("/test")
