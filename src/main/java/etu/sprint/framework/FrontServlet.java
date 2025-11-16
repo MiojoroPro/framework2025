@@ -5,7 +5,7 @@ import java.lang.reflect.Method;
 import java.util.*;
 import javax.servlet.*;
 import javax.servlet.http.*;
-import etu.sprint.framework.annotation.*;
+import etu.sprint.framework.annotation.MyUrl;
 import etu.sprint.framework.controller.Controller;
 
 public class FrontServlet extends HttpServlet {
@@ -47,10 +47,9 @@ public class FrontServlet extends HttpServlet {
         String ctx = request.getContextPath();
         String path = uri.substring(ctx.length());
 
-        response.setContentType("text/html;charset=UTF-8");
+        Method m = urlMappings.get(path);
         PrintWriter out = response.getWriter();
 
-        Method m = urlMappings.get(path);
         if (m != null) {
             try {
                 Object controller = controllerInstances.get(path);
@@ -60,14 +59,31 @@ public class FrontServlet extends HttpServlet {
                     m.setAccessible(true);
                     Object result = m.invoke(controller);
 
-                    out.println("<html><body>");
-                    out.println("<h2>Résultat du contrôleur :</h2>");
-                    out.println("<p><strong>Contrôleur :</strong> " + controllerClass.getSimpleName() + "</p>");
-                    out.println("<p><strong>Méthode :</strong> " + m.getName() + "</p>");
-                    out.println("<p><strong>Résultat :</strong> " + result + "</p>");
-                    out.println("</body></html>");
+                    // Si le retour est un ModelView
+                    if (result instanceof ModelView) {
+                        ModelView mv = (ModelView) result;
+
+                        // Ajouter les données dans la requête
+                        for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                            request.setAttribute(entry.getKey(), entry.getValue());
+                        }
+
+                        // Forward vers la JSP
+                        RequestDispatcher rd = request.getRequestDispatcher("/WEB-INF/views/" + mv.getView());
+                        rd.forward(request, response);
+
+                    } else {
+                        // Cas String ou autre
+                        response.setContentType("text/html;charset=UTF-8");
+                        out.println("<html><body>");
+                        out.println("<h2>Résultat du contrôleur :</h2>");
+                        out.println("<p><strong>Contrôleur :</strong> " + controllerClass.getSimpleName() + "</p>");
+                        out.println("<p><strong>Méthode :</strong> " + m.getName() + "</p>");
+                        out.println("<p><strong>Résultat :</strong> " + result + "</p>");
+                        out.println("</body></html>");
+                    }
+
                 } else {
-                    // Si la classe n'est pas annotée @Controller, on ne fait rien
                     response.sendError(HttpServletResponse.SC_NOT_FOUND, "Page non trouvée");
                 }
 
@@ -75,8 +91,7 @@ public class FrontServlet extends HttpServlet {
                 e.printStackTrace(out);
             }
         } else {
-            response.setContentType("text/html; charset=UTF-8");
-            response.setCharacterEncoding("UTF-8");
+            response.setContentType("text/html;charset=UTF-8");
             out.println("<html><body>");
             out.println("<h1>Page non trouvée</h1>");
             out.println("<p>Vous avez demandé : " + path + "</p>");
@@ -86,7 +101,7 @@ public class FrontServlet extends HttpServlet {
 
     private void scanAndRegisterControllers(List<Class<?>> classes) throws Exception {
         for (Class<?> cls : classes) {
-            if (!cls.isAnnotationPresent(Controller.class)) continue; // On ne prend que les contrôleurs
+            if (!cls.isAnnotationPresent(Controller.class)) continue; // Ne garder que les contrôleurs
 
             Object instance = cls.getDeclaredConstructor().newInstance();
 
