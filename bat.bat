@@ -22,7 +22,8 @@ REM Compiler FrontServlet + annotations en une seule commande
 echo Compilation des fichiers Java...
 "%JDK_BIN%\javac.exe" -cp "%SERVLET_LIB%;." -d %OUT% ^
     %SRC%\etu\sprint\framework\*.java ^
-    %SRC%\etu\sprint\framework\annotation\*.java
+    %SRC%\etu\sprint\framework\annotation\*.java ^
+    %SRC%\etu\sprint\framework\controller\*.java
 
 if errorlevel 1 (
     echo.

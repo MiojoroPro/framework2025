@@ -1,0 +1,15 @@
+# Ignorer les fichiers batch
+*.bat
+
+# Ignorer tous les fichiers .class
+*.class
+
+# Ignorer le dossier de sortie /out/
+out/
+
+# Ignorer le JAR généré localement
+lib/sprint-framework.jar
+
+# Optionnel : ignorer les logs, caches et fichiers temporaires
+*.log
+*.tmp
