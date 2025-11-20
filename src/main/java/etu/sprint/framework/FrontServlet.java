@@ -3,42 +3,36 @@ package etu.sprint.framework;
 import java.io.*;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.regex.*;
+
 import javax.servlet.*;
 import javax.servlet.http.*;
+
 import etu.sprint.framework.annotation.MyUrl;
 import etu.sprint.framework.controller.Controller;
 
 public class FrontServlet extends HttpServlet {
 
-    private Map<String, Method> urlMappings = new HashMap<>();
-    private Map<String, Object> controllerInstances = new HashMap<>();
+    private List<RouteMapping> mappings = new ArrayList<>();
     private boolean isScanned = false;
 
     @Override
     public void init() throws ServletException {
         super.init();
-        System.out.println("[FrontServlet] Initialisation terminée, le scan se fera à la première requête.");
+        System.out.println("[FrontServlet] Initialisation OK");
     }
 
     @Override
     protected void service(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
+
         response.setContentType("text/html; charset=UTF-8");
-        response.setCharacterEncoding("UTF-8");
 
         if (!isScanned) {
             synchronized (this) {
                 if (!isScanned) {
-                    System.out.println("[FrontServlet] Premier accès : scan des classes...");
-                    try {
-                        String classesPath = getServletContext().getRealPath("/WEB-INF/classes");
-                        List<Class<?>> classes = getAllClasses(classesPath, "");
-                        scanAndRegisterControllers(classes);
-                        isScanned = true;
-                        System.out.println("[FrontServlet] Scan terminé avec succès !");
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
+                    scanControllers();
+                    isScanned = true;
                 }
             }
         }
@@ -47,92 +41,138 @@ public class FrontServlet extends HttpServlet {
         String ctx = request.getContextPath();
         String path = uri.substring(ctx.length());
 
-        Method m = urlMappings.get(path);
+        RouteMapping matched = null;
+        String[] extractedParams = null;
+
+        // --- MATCH ROUTE (STATIC + DYNAMIC) ---
+        for (RouteMapping rm : mappings) {
+
+            String regex = convertPathToRegex(rm.getPattern());
+            Pattern p = Pattern.compile("^" + regex + "$");
+            Matcher m = p.matcher(path);
+
+            if (m.matches()) {
+                matched = rm;
+
+                // Extract params
+                extractedParams = new String[m.groupCount()];
+                for (int i = 0; i < m.groupCount(); i++) {
+                    extractedParams[i] = m.group(i + 1);
+                }
+                break;
+            }
+        }
+
         PrintWriter out = response.getWriter();
 
-        if (m != null) {
-            try {
-                Object controller = controllerInstances.get(path);
-                Class<?> controllerClass = controller.getClass();
+        if (matched == null) {
+            out.println("<h1>404 - No route matches " + path + "</h1>");
+            return;
+        }
 
-                if (controllerClass.isAnnotationPresent(Controller.class)) {
-                    m.setAccessible(true);
-                    Object result = m.invoke(controller);
+        // --- EXECUTE CONTROLLER METHOD ---
+        try {
+            Method method = matched.getMethod();
+            Object controller = matched.getController();
 
-                    // Si le retour est un ModelView
-                    if (result instanceof ModelView) {
-                        ModelView mv = (ModelView) result;
+            // Build method arguments
+            Class<?>[] paramTypes = method.getParameterTypes();
+            Object[] args = new Object[paramTypes.length];
 
-                        // Ajouter les données dans la requête
-                        for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
-                            request.setAttribute(entry.getKey(), entry.getValue());
-                        }
-
-                        // Forward vers la JSP
-                        RequestDispatcher rd = request.getRequestDispatcher("/WEB-INF/views/" + mv.getView());
-                        rd.forward(request, response);
-
-                    } else {
-                        // Cas String ou autre
-                        response.setContentType("text/html;charset=UTF-8");
-                        out.println("<html><body>");
-                        out.println("<h2>Résultat du contrôleur :</h2>");
-                        out.println("<p><strong>Contrôleur :</strong> " + controllerClass.getSimpleName() + "</p>");
-                        out.println("<p><strong>Méthode :</strong> " + m.getName() + "</p>");
-                        out.println("<p><strong>Résultat :</strong> " + result + "</p>");
-                        out.println("</body></html>");
-                    }
-
+            for (int i = 0; i < args.length; i++) {
+                if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) {
+                    args[i] = Integer.parseInt(extractedParams[i]);
                 } else {
-                    response.sendError(HttpServletResponse.SC_NOT_FOUND, "Page non trouvée");
+                    args[i] = extractedParams[i];
+                }
+            }
+
+            Object result = method.invoke(controller, args);
+
+            // --- HANDLE ModelView ---
+            if (result instanceof ModelView) {
+                ModelView mv = (ModelView) result;
+
+                // REDIRECT ?
+                if (mv.isRedirect()) {
+                    response.sendRedirect(mv.getView());
+                    return;
                 }
 
-            } catch (Exception e) {
-                e.printStackTrace(out);
+                // Add data
+                for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                    request.setAttribute(entry.getKey(), entry.getValue());
+                }
+
+                RequestDispatcher rd = request.getRequestDispatcher("/WEB-INF/views/" + mv.getView());
+                rd.forward(request, response);
+                return;
             }
-        } else {
-            response.setContentType("text/html;charset=UTF-8");
-            out.println("<html><body>");
-            out.println("<h1>Page non trouvée</h1>");
-            out.println("<p>Vous avez demandé : " + path + "</p>");
-            out.println("</body></html>");
+
+            // --- RESULT NOT ModelView ---
+            out.println("<h3>Controller returned : " + result + "</h3>");
+
+        } catch (Exception e) {
+            e.printStackTrace(out);
         }
     }
 
-    private void scanAndRegisterControllers(List<Class<?>> classes) throws Exception {
-        for (Class<?> cls : classes) {
-            if (!cls.isAnnotationPresent(Controller.class)) continue; // Ne garder que les contrôleurs
+    // --- Convert /user/{id} → /user/([^/]+) ---
+    private String convertPathToRegex(String path) {
+        return path.replaceAll("\\{[^/]+}", "([^/]+)");
+    }
 
-            Object instance = cls.getDeclaredConstructor().newInstance();
 
-            for (Method m : cls.getDeclaredMethods()) {
-                if (m.isAnnotationPresent(MyUrl.class)) {
-                    MyUrl myUrl = m.getAnnotation(MyUrl.class);
-                    String key = myUrl.value();
-                    urlMappings.put(key, m);
-                    controllerInstances.put(key, instance);
-                    System.out.println("Mapping ajouté : " + key + " -> " + m.getName() + " (" + cls.getName() + ")");
+    // --- Scan all controllers and routes ---
+    private void scanControllers() {
+        try {
+            String classesPath = getServletContext().getRealPath("/WEB-INF/classes");
+            List<Class<?>> classes = getAllClasses(classesPath, "");
+
+            for (Class<?> cls : classes) {
+                if (!cls.isAnnotationPresent(Controller.class)) {
+                    continue;
+                }
+
+                Object instance = cls.getDeclaredConstructor().newInstance();
+
+                for (Method method : cls.getDeclaredMethods()) {
+
+                    if (method.isAnnotationPresent(MyUrl.class)) {
+                        String pattern = method.getAnnotation(MyUrl.class).value();
+                        mappings.add(new RouteMapping(pattern, method, instance));
+
+                        System.out.println("[Route] " + pattern + " -> " + cls.getName() + "." + method.getName());
+                    }
                 }
             }
+
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
-    private List<Class<?>> getAllClasses(String basePath, String packageName) throws Exception {
+
+    // --- Load all .class files recursively ---
+    private List<Class<?>> getAllClasses(String basePath, String pkg) throws Exception {
+
         List<Class<?>> classes = new ArrayList<>();
-        File baseDir = new File(basePath);
+        File dir = new File(basePath);
 
-        for (File file : Objects.requireNonNull(baseDir.listFiles())) {
+        for (File file : Objects.requireNonNull(dir.listFiles())) {
+
             if (file.isDirectory()) {
-                String subPackage = packageName.isEmpty() ? file.getName() : packageName + "." + file.getName();
-                classes.addAll(getAllClasses(file.getAbsolutePath(), subPackage));
-            } else if (file.getName().endsWith(".class")) {
-                String className = (packageName.isEmpty() ? "" : packageName + ".") + file.getName().replace(".class", "");
+                String subPkg = pkg.isEmpty() ? file.getName() : pkg + "." + file.getName();
+                classes.addAll(getAllClasses(file.getAbsolutePath(), subPkg));
+            }
+            else if (file.getName().endsWith(".class")) {
+                String className = pkg + "." + file.getName().replace(".class", "");
+
+                if (pkg.isEmpty()) continue;
+
                 try {
                     classes.add(Class.forName(className));
-                    System.out.println("Classe trouvée : " + className);
-                } catch (ClassNotFoundException e) {
-                    System.err.println("Classe non trouvée : " + className);
-                }
+                } catch (Exception ignored) {}
             }
         }
         return classes;
