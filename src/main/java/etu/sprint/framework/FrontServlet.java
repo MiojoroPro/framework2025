@@ -1,7 +1,7 @@
 package etu.sprint.framework;
 
 import java.io.*;
-import java.lang.reflect.Method;
+import java.lang.reflect.*;
 import java.util.*;
 import java.util.regex.*;
 
@@ -9,6 +9,7 @@ import javax.servlet.*;
 import javax.servlet.http.*;
 
 import etu.sprint.framework.annotation.MyUrl;
+import etu.sprint.framework.annotation.RequestParam;
 import etu.sprint.framework.controller.Controller;
 
 public class FrontServlet extends HttpServlet {
@@ -19,7 +20,7 @@ public class FrontServlet extends HttpServlet {
     @Override
     public void init() throws ServletException {
         super.init();
-        System.out.println("[FrontServlet] Initialisation OK");
+        System.out.println("[FrontServlet] Sprint 6 + 6bis chargé !");
     }
 
     @Override
@@ -42,22 +43,23 @@ public class FrontServlet extends HttpServlet {
         String path = uri.substring(ctx.length());
 
         RouteMapping matched = null;
-        String[] extractedParams = null;
+        Map<String, String> pathVariables = new HashMap<>();
 
-        // --- MATCH ROUTE (STATIC + DYNAMIC) ---
+        // ---------------------------
+        // MATCHING ROUTES + VARIABLES
+        // ---------------------------
         for (RouteMapping rm : mappings) {
 
-            String regex = convertPathToRegex(rm.getPattern());
-            Pattern p = Pattern.compile("^" + regex + "$");
-            Matcher m = p.matcher(path);
+            Matcher matcher = rm.getRegexPattern().matcher(path);
 
-            if (m.matches()) {
+            if (matcher.matches()) {
                 matched = rm;
 
-                // Extract params
-                extractedParams = new String[m.groupCount()];
-                for (int i = 0; i < m.groupCount(); i++) {
-                    extractedParams[i] = m.group(i + 1);
+                // extraire les variables {name}
+                List<String> varNames = rm.getVariableNames();
+
+                for (int i = 0; i < varNames.size(); i++) {
+                    pathVariables.put(varNames.get(i), matcher.group(i + 1));
                 }
                 break;
             }
@@ -66,96 +68,132 @@ public class FrontServlet extends HttpServlet {
         PrintWriter out = response.getWriter();
 
         if (matched == null) {
-            out.println("<h1>404 - No route matches " + path + "</h1>");
+            out.println("<h1>404 - Aucun mapping pour " + path + "</h1>");
             return;
         }
 
-        // --- EXECUTE CONTROLLER METHOD ---
+        // ---------------------------
+        // PREPARATION DES ARGUMENTS
+        // ---------------------------
+
+        Object controller = matched.getController();
+        Method method = matched.getMethod();
+        Parameter[] params = method.getParameters();
+
+        Object[] args = new Object[params.length];
+
         try {
-            Method method = matched.getMethod();
-            Object controller = matched.getController();
 
-            // Build method arguments
-            Class<?>[] paramTypes = method.getParameterTypes();
-            Object[] args = new Object[paramTypes.length];
+            for (int i = 0; i < params.length; i++) {
 
-            for (int i = 0; i < args.length; i++) {
-                if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) {
-                    args[i] = Integer.parseInt(extractedParams[i]);
-                } else {
-                    args[i] = extractedParams[i];
+                Parameter p = params[i];
+                Object value = null;
+
+                // 1. Priorité @RequestParam
+                if (p.isAnnotationPresent(RequestParam.class)) {
+
+                    String paramName = p.getAnnotation(RequestParam.class).value();
+                    String raw = request.getParameter(paramName);
+
+                    if (raw == null)
+                        throw new RuntimeException("Paramètre manquant : " + paramName);
+
+                    value = convert(raw, p.getType());
                 }
+
+                // 2. Sinon, variable de route {name}
+                else if (pathVariables.containsKey(p.getName())) {
+                    String raw = pathVariables.get(p.getName());
+                    value = convert(raw, p.getType());
+                }
+
+                // 3. Aucun paramètre correspondant
+                else {
+                    throw new RuntimeException("Impossible de binder l'argument : " + p.getName());
+                }
+
+                args[i] = value;
             }
+
+            // ---------------------------
+            // INVOKE METHODE
+            // ---------------------------
 
             Object result = method.invoke(controller, args);
 
-            // --- HANDLE ModelView ---
+            // ---------------------------
+            // GESTION MODELVIEW
+            // ---------------------------
             if (result instanceof ModelView) {
                 ModelView mv = (ModelView) result;
 
-                // REDIRECT ?
                 if (mv.isRedirect()) {
                     response.sendRedirect(mv.getView());
                     return;
                 }
 
-                // Add data
+                // injecter les données dans la request
                 for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
                     request.setAttribute(entry.getKey(), entry.getValue());
                 }
 
-                RequestDispatcher rd = request.getRequestDispatcher("/WEB-INF/views/" + mv.getView());
-                rd.forward(request, response);
+                // forward vers JSP
+                request.getRequestDispatcher("/WEB-INF/views/" + mv.getView())
+                        .forward(request, response);
                 return;
             }
 
-            // --- RESULT NOT ModelView ---
-            out.println("<h3>Controller returned : " + result + "</h3>");
+            // Si la méthode renvoie une String simple
+            out.println("<h3>Returned: " + result + "</h3>");
 
         } catch (Exception e) {
             e.printStackTrace(out);
         }
     }
 
-    // --- Convert /user/{id} → /user/([^/]+) ---
-    private String convertPathToRegex(String path) {
-        return path.replaceAll("\\{[^/]+}", "([^/]+)");
+    // ---------------------------
+    // FONCTION DE CONVERSION
+    // ---------------------------
+    private Object convert(String v, Class<?> type) {
+        if (type == int.class || type == Integer.class) return Integer.parseInt(v);
+        if (type == double.class || type == Double.class) return Double.parseDouble(v);
+        if (type == boolean.class || type == Boolean.class) return Boolean.parseBoolean(v);
+        return v;
     }
 
-
-    // --- Scan all controllers and routes ---
+    // ---------------------------
+    // SCAN DES CONTROLLERS
+    // ---------------------------
     private void scanControllers() {
         try {
             String classesPath = getServletContext().getRealPath("/WEB-INF/classes");
             List<Class<?>> classes = getAllClasses(classesPath, "");
 
             for (Class<?> cls : classes) {
-                if (!cls.isAnnotationPresent(Controller.class)) {
-                    continue;
-                }
+                if (!cls.isAnnotationPresent(Controller.class)) continue;
 
                 Object instance = cls.getDeclaredConstructor().newInstance();
 
                 for (Method method : cls.getDeclaredMethods()) {
-
                     if (method.isAnnotationPresent(MyUrl.class)) {
-                        String pattern = method.getAnnotation(MyUrl.class).value();
-                        mappings.add(new RouteMapping(pattern, method, instance));
 
-                        System.out.println("[Route] " + pattern + " -> " + cls.getName() + "." + method.getName());
+                        String route = method.getAnnotation(MyUrl.class).value();
+
+                        RouteMapping rm = new RouteMapping(route, method, instance);
+                        mappings.add(rm);
+
+                        System.out.println("[Route] " + route + " -> " + cls.getName() + "." + method.getName());
                     }
                 }
             }
 
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        } catch (Exception ignored) {}
     }
 
-
-    // --- Load all .class files recursively ---
+    // ---------------------------
+    // CHARGEMENT DES CLASSES
+    // ---------------------------
     private List<Class<?>> getAllClasses(String basePath, String pkg) throws Exception {
-
         List<Class<?>> classes = new ArrayList<>();
         File dir = new File(basePath);
 
@@ -165,14 +203,10 @@ public class FrontServlet extends HttpServlet {
                 String subPkg = pkg.isEmpty() ? file.getName() : pkg + "." + file.getName();
                 classes.addAll(getAllClasses(file.getAbsolutePath(), subPkg));
             }
-            else if (file.getName().endsWith(".class")) {
+            else if (file.getName().endsWith(".class") && !pkg.isEmpty()) {
                 String className = pkg + "." + file.getName().replace(".class", "");
-
-                if (pkg.isEmpty()) continue;
-
-                try {
-                    classes.add(Class.forName(className));
-                } catch (Exception ignored) {}
+                try { classes.add(Class.forName(className)); }
+                catch (Exception ignored) {}
             }
         }
         return classes;
