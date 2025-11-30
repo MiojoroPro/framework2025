@@ -8,7 +8,7 @@ import java.util.regex.*;
 import javax.servlet.*;
 import javax.servlet.http.*;
 
-import etu.sprint.framework.annotation.MyUrl;
+import etu.sprint.framework.annotation.*;
 import etu.sprint.framework.controller.Controller;
 
 public class FrontServlet extends HttpServlet {
@@ -40,18 +40,19 @@ public class FrontServlet extends HttpServlet {
         String uri = request.getRequestURI();
         String ctx = request.getContextPath();
         String path = uri.substring(ctx.length());
+        String httpMethod = request.getMethod(); // GET, POST, PUT, DELETE, etc.
 
         RouteMapping matched = null;
         String[] extractedParams = null;
 
-        // --- MATCH ROUTE (STATIC + DYNAMIC) ---
+        // --- MATCH ROUTE (STATIC + DYNAMIC + HTTP METHOD) ---
         for (RouteMapping rm : mappings) {
 
             String regex = convertPathToRegex(rm.getPattern());
             Pattern p = Pattern.compile("^" + regex + "$");
             Matcher m = p.matcher(path);
 
-            if (m.matches()) {
+            if (m.matches() && rm.getHttpMethod().equalsIgnoreCase(httpMethod)) {
                 matched = rm;
 
                 // Extract params
@@ -66,7 +67,7 @@ public class FrontServlet extends HttpServlet {
         PrintWriter out = response.getWriter();
 
         if (matched == null) {
-            out.println("<h1>404 - No route matches " + path + "</h1>");
+            out.println("<h1>404 - No route matches " + httpMethod + " " + path + "</h1>");
             return;
         }
 
@@ -76,15 +77,16 @@ public class FrontServlet extends HttpServlet {
             Object controller = matched.getController();
 
             // Build method arguments
-            Class<?>[] paramTypes = method.getParameterTypes();
-            Object[] args = new Object[paramTypes.length];
+            java.lang.reflect.Parameter[] parameters = method.getParameters();
+            Object[] args = new Object[parameters.length];
 
-            for (int i = 0; i < args.length; i++) {
-                if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) {
-                    args[i] = Integer.parseInt(extractedParams[i]);
-                } else {
-                    args[i] = extractedParams[i];
-                }
+            int urlParamIndex = 0;
+            for (int i = 0; i < parameters.length; i++) {
+                args[i] = ParamHandler.resolveParameter(
+                    parameters[i], 
+                    request, 
+                    urlParamIndex < extractedParams.length ? extractedParams[urlParamIndex++] : null
+                );
             }
 
             Object result = method.invoke(controller, args);
@@ -138,11 +140,44 @@ public class FrontServlet extends HttpServlet {
 
                 for (Method method : cls.getDeclaredMethods()) {
 
-                    if (method.isAnnotationPresent(MyUrl.class)) {
-                        String pattern = method.getAnnotation(MyUrl.class).value();
-                        mappings.add(new RouteMapping(pattern, method, instance));
+                    String pattern = null;
+                    String httpMethod = null;
 
-                        System.out.println("[Route] " + pattern + " -> " + cls.getName() + "." + method.getName());
+                    // Check for @GetMapping
+                    if (method.isAnnotationPresent(GetMapping.class)) {
+                        pattern = method.getAnnotation(GetMapping.class).value();
+                        httpMethod = "GET";
+                    }
+                    // Check for @PostMapping
+                    else if (method.isAnnotationPresent(PostMapping.class)) {
+                        pattern = method.getAnnotation(PostMapping.class).value();
+                        httpMethod = "POST";
+                    }
+                    // Check for @PutMapping
+                    else if (method.isAnnotationPresent(PutMapping.class)) {
+                        pattern = method.getAnnotation(PutMapping.class).value();
+                        httpMethod = "PUT";
+                    }
+                    // Check for @DeleteMapping
+                    else if (method.isAnnotationPresent(DeleteMapping.class)) {
+                        pattern = method.getAnnotation(DeleteMapping.class).value();
+                        httpMethod = "DELETE";
+                    }
+                    // Check for @RequestMapping
+                    else if (method.isAnnotationPresent(RequestMapping.class)) {
+                        RequestMapping rm = method.getAnnotation(RequestMapping.class);
+                        pattern = rm.value();
+                        httpMethod = rm.method();
+                    }
+                    // Backward compatibility with @MyUrl (defaults to GET)
+                    else if (method.isAnnotationPresent(MyUrl.class)) {
+                        pattern = method.getAnnotation(MyUrl.class).value();
+                        httpMethod = "GET";
+                    }
+
+                    if (pattern != null && httpMethod != null) {
+                        mappings.add(new RouteMapping(pattern, method, instance, httpMethod));
+                        System.out.println("[Route] " + httpMethod + " " + pattern + " -> " + cls.getName() + "." + method.getName());
                     }
                 }
             }
