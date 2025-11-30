@@ -21,7 +21,7 @@ del /S /Q %OUT%\*.class >nul 2>&1
 
 REM Compiler le framework
 echo Compilation des fichiers Java du framework...
-"%JDK_BIN%\javac.exe" -cp "%SERVLET_LIB%;." -d %OUT% ^
+"%JDK_BIN%\javac.exe" -encoding UTF-8 -cp "%SERVLET_LIB%;." -d %OUT% ^
     %SRC%\etu\sprint\framework\*.java ^
     %SRC%\etu\sprint\framework\annotation\*.java ^
     %SRC%\etu\sprint\framework\controller\*.java
