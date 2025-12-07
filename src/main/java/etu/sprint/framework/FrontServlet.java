@@ -2,6 +2,7 @@ package etu.sprint.framework;
 
 import java.io.*;
 import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.util.*;
 import java.util.regex.*;
 
@@ -10,11 +11,12 @@ import javax.servlet.http.*;
 
 import etu.sprint.framework.annotation.HttpMethod;
 import etu.sprint.framework.annotation.MyUrl;
+import etu.sprint.framework.annotation.RequestParam;
 import etu.sprint.framework.controller.Controller;
 
 /**
  * FrontServlet : Le contrôleur frontal du framework
- * VERSION CORRIGÉE : Gère l'ordre des routes ET les redirections avec context path
+ * VERSION SPRINT 8 : Support du paramètre Map<String, Object> dans les méthodes de contrôleur
  */
 public class FrontServlet extends HttpServlet {
 
@@ -24,7 +26,7 @@ public class FrontServlet extends HttpServlet {
     @Override
     public void init() throws ServletException {
         super.init();
-        System.out.println("[FrontServlet] Initialisation OK");
+        System.out.println("[FrontServlet] Initialisation OK - Sprint 8 avec support Map");
     }
 
     @Override
@@ -84,27 +86,8 @@ public class FrontServlet extends HttpServlet {
             Method method = matched.getMethod();
             Object controller = matched.getController();
 
-            // Build method arguments
-            Class<?>[] paramTypes = method.getParameterTypes();
-            Object[] args = new Object[paramTypes.length];
-
-            for (int i = 0; i < args.length; i++) {
-                if (i < extractedParams.length && extractedParams[i] != null) {
-                    if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) {
-                        args[i] = Integer.parseInt(extractedParams[i]);
-                    } else {
-                        args[i] = extractedParams[i];
-                    }
-                } else {
-                    if (paramTypes[i] == int.class) {
-                        args[i] = 0;
-                    } else if (paramTypes[i] == Integer.class) {
-                        args[i] = null;
-                    } else {
-                        args[i] = null;
-                    }
-                }
-            }
+            // Construction des arguments de la méthode (SPRINT 8)
+            Object[] args = buildMethodArguments(method, extractedParams, request);
 
             Object result = method.invoke(controller, args);
 
@@ -116,19 +99,11 @@ public class FrontServlet extends HttpServlet {
                 if (mv.isRedirect()) {
                     String redirectUrl = mv.getView();
                     
-                    // ========================================
-                    // *** CORRECTION : GESTION DU CONTEXT PATH ***
-                    // ========================================
-                    
-                    // Si l'URL commence par "/" (chemin absolu dans l'app)
-                    // ET ne contient pas déjà le context path
-                    // → Ajouter le context path automatiquement
+                    // Gestion du context path
                     if (redirectUrl.startsWith("/") && !redirectUrl.startsWith(ctx)) {
                         redirectUrl = ctx + redirectUrl;
                         System.out.println("[Redirect] " + mv.getView() + " → " + redirectUrl);
                     }
-                    // Si l'URL ne commence pas par "/" (URL relative ou complète)
-                    // → Laisser tel quel
                     
                     response.sendRedirect(redirectUrl);
                     return;
@@ -150,6 +125,137 @@ public class FrontServlet extends HttpServlet {
         } catch (Exception e) {
             e.printStackTrace(out);
         }
+    }
+
+    /**
+     * SPRINT 8 : Construit les arguments pour une méthode de contrôleur
+     * Gère les paramètres Map<String, Object>, @RequestParam et paramètres d'URL
+     */
+    private Object[] buildMethodArguments(
+            Method method, 
+            String[] extractedParams, 
+            HttpServletRequest request) {
+        
+        Parameter[] parameters = method.getParameters();
+        Object[] args = new Object[parameters.length];
+        int extractedIndex = 0;
+        
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter param = parameters[i];
+            Class<?> paramType = param.getType();
+            
+            // Cas 1: Paramètre Map<String, Object>
+            if (Map.class.isAssignableFrom(paramType)) {
+                Map<String, Object> requestMap = createRequestMap(request);
+                args[i] = requestMap;
+            }
+            // Cas 2: Paramètre avec annotation @RequestParam
+            else if (param.isAnnotationPresent(RequestParam.class)) {
+                String paramName = param.getAnnotation(RequestParam.class).value();
+                String value = request.getParameter(paramName);
+                args[i] = ParamHandler.convert(value, paramType);
+            }
+            // Cas 3: Paramètre extrait de l'URL
+            else if (extractedIndex < extractedParams.length) {
+                args[i] = ParamHandler.convert(extractedParams[extractedIndex], paramType);
+                extractedIndex++;
+            }
+            // Cas 4: Valeur par défaut
+            else {
+                args[i] = getDefaultValue(paramType);
+            }
+        }
+        
+        return args;
+    }
+    
+    /**
+     * SPRINT 8 : Crée une Map avec tous les paramètres et attributs de la requête
+     */
+    private Map<String, Object> createRequestMap(HttpServletRequest request) {
+        Map<String, Object> requestMap = new HashMap<>();
+        
+        // 1. Ajouter tous les paramètres de la requête (GET/POST)
+        Enumeration<String> paramNames = request.getParameterNames();
+        while (paramNames.hasMoreElements()) {
+            String paramName = paramNames.nextElement();
+            String[] values = request.getParameterValues(paramName);
+            
+            // Si un seul paramètre, stocker directement, sinon tableau
+            if (values != null && values.length == 1) {
+                // Essayer de convertir les types de base
+                String value = values[0];
+                requestMap.put(paramName, convertParameterValue(value));
+            } else {
+                requestMap.put(paramName, values);
+            }
+        }
+        
+        // 2. Ajouter tous les attributs de la requête
+        Enumeration<String> attrNames = request.getAttributeNames();
+        while (attrNames.hasMoreElements()) {
+            String attrName = attrNames.nextElement();
+            requestMap.put(attrName, request.getAttribute(attrName));
+        }
+        
+        // 3. Ajouter les informations de la requête
+        requestMap.put("request", request);
+        requestMap.put("session", request.getSession(false));
+        requestMap.put("contextPath", request.getContextPath());
+        
+        return requestMap;
+    }
+    
+    /**
+     * SPRINT 8 : Convertit une valeur de paramètre String en type approprié
+     */
+    private Object convertParameterValue(String value) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        
+        // Essayer Integer
+        if (value.matches("-?\\d+")) {
+            try {
+                return Integer.parseInt(value);
+            } catch (NumberFormatException e) {
+                // Continuer avec d'autres types
+            }
+        }
+        
+        // Essayer Double
+        if (value.matches("-?\\d+(\\.\\d+)?")) {
+            try {
+                return Double.parseDouble(value);
+            } catch (NumberFormatException e) {
+                // Continuer avec d'autres types
+            }
+        }
+        
+        // Essayer Boolean
+        if (value.equalsIgnoreCase("true") || value.equalsIgnoreCase("false")) {
+            return Boolean.parseBoolean(value);
+        }
+        
+        // Par défaut, retourner String
+        return value;
+    }
+    
+    /**
+     * SPRINT 8 : Retourne la valeur par défaut pour un type donné
+     */
+    private Object getDefaultValue(Class<?> type) {
+        if (type.isPrimitive()) {
+            if (type == int.class) return 0;
+            else if (type == double.class) return 0.0;
+            else if (type == boolean.class) return false;
+            else if (type == long.class) return 0L;
+            else if (type == float.class) return 0.0f;
+            else if (type == short.class) return (short)0;
+            else if (type == byte.class) return (byte)0;
+            else if (type == char.class) return '\0';
+        }
+        return null;
     }
 
     private String convertPathToRegex(String path) {
@@ -202,13 +308,31 @@ public class FrontServlet extends HttpServlet {
 
             mappings.addAll(tempMappings);
 
-            System.out.println("\n========== ROUTES ENREGISTRÉES ==========");
+            System.out.println("\n========== ROUTES ENREGISTRÉES (SPRINT 8) ==========");
             for (RouteMapping rm : mappings) {
                 System.out.println("[Route] " + rm.getHttpMethod() + " " + rm.getPattern() + 
                                  " -> " + rm.getMethod().getDeclaringClass().getSimpleName() + 
                                  "." + rm.getMethod().getName());
+                
+                // Afficher les paramètres de la méthode
+                Parameter[] params = rm.getMethod().getParameters();
+                if (params.length > 0) {
+                    System.out.print("       Paramètres: ");
+                    for (Parameter p : params) {
+                        String type = p.getType().getSimpleName();
+                        if (p.isAnnotationPresent(RequestParam.class)) {
+                            String name = p.getAnnotation(RequestParam.class).value();
+                            System.out.print("@RequestParam(\"" + name + "\") " + type + ", ");
+                        } else if (Map.class.isAssignableFrom(p.getType())) {
+                            System.out.print("Map<String, Object>, ");
+                        } else {
+                            System.out.print(type + ", ");
+                        }
+                    }
+                    System.out.println();
+                }
             }
-            System.out.println("=========================================\n");
+            System.out.println("===================================================\n");
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -249,58 +373,3 @@ public class FrontServlet extends HttpServlet {
         return classes;
     }
 }
-
-/*
- * ========================================
- * EXPLICATION DU PROBLÈME DE REDIRECTION
- * ========================================
- * 
- * PROBLÈME :
- * Dans le controller :
- *   mv.setView("/user/123");
- *   mv.setRedirect(true);
- * 
- * Le framework fait :
- *   response.sendRedirect("/user/123");
- * 
- * → Redirige vers http://localhost:8989/user/123
- * 
- * MAIS on voulait :
- * → http://localhost:8989/Framework-Test/user/123
- * 
- * CAUSE :
- * response.sendRedirect() avec un chemin commençant par "/"
- * est relatif à la RACINE DU SERVEUR, pas à l'application !
- * 
- * SOLUTION :
- * Ajouter automatiquement le context path (/Framework-Test)
- * avant de faire la redirection.
- * 
- * EXEMPLES :
- * 
- * Dans le controller :        Framework fait :
- * mv.setView("/user/123")  →  redirect vers /Framework-Test/user/123 ✅
- * mv.setView("/users")     →  redirect vers /Framework-Test/users ✅
- * mv.setView("users")      →  redirect vers users (relatif) ⚠️
- * mv.setView("http://...")  →  redirect vers http://... (externe) ✅
- * 
- * ========================================
- * TYPES DE REDIRECTION SUPPORTÉS
- * ========================================
- * 
- * 1. REDIRECTION INTERNE (chemin absolu dans l'app) :
- *    mv.setView("/user/123");
- *    → /Framework-Test/user/123
- * 
- * 2. REDIRECTION RELATIVE :
- *    mv.setView("success");
- *    → Relatif à l'URL courante (pas recommandé)
- * 
- * 3. REDIRECTION EXTERNE :
- *    mv.setView("http://google.com");
- *    → Vers un autre site
- * 
- * RECOMMANDATION :
- * Toujours utiliser des chemins absolus commençant par "/"
- * Le framework ajoutera automatiquement le context path !
- */
