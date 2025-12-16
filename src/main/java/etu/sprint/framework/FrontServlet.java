@@ -1,3 +1,4 @@
+// File name: FrontServlet.java (version mise à jour)
 package etu.sprint.framework;
 
 import java.io.*;
@@ -14,11 +15,12 @@ import etu.sprint.framework.annotation.HttpMethod;
 import etu.sprint.framework.annotation.MyUrl;
 import etu.sprint.framework.annotation.RequestParam;
 import etu.sprint.framework.annotation.ModelAttribute;
+import etu.sprint.framework.annotation.JSON;
 import etu.sprint.framework.controller.Controller;
 
 /**
  * FrontServlet : Le contrôleur frontal du framework
- * VERSION SPRINT 8 BIS : Support du binding automatique d'objets Java
+ * VERSION SPRINT 9 : Support des API REST avec retour JSON
  */
 public class FrontServlet extends HttpServlet {
 
@@ -28,7 +30,7 @@ public class FrontServlet extends HttpServlet {
     @Override
     public void init() throws ServletException {
         super.init();
-        System.out.println("[FrontServlet] Initialisation OK - Sprint 8 Bis avec binding automatique");
+        System.out.println("[FrontServlet] Initialisation OK - Sprint 9 avec API REST");
     }
 
     @Override
@@ -88,10 +90,16 @@ public class FrontServlet extends HttpServlet {
             Method method = matched.getMethod();
             Object controller = matched.getController();
 
-            // Construction des arguments de la méthode (SPRINT 8 BIS)
+            // Construction des arguments de la méthode
             Object[] args = buildMethodArguments(method, extractedParams, request);
 
             Object result = method.invoke(controller, args);
+
+            // --- SPRINT 9: VÉRIFIER SI C'EST UNE API JSON ---
+            if (method.isAnnotationPresent(JSON.class)) {
+                handleJsonResponse(method, result, response);
+                return;
+            }
 
             // --- HANDLE ModelView ---
             if (result instanceof ModelView) {
@@ -130,8 +138,65 @@ public class FrontServlet extends HttpServlet {
     }
 
     /**
-     * SPRINT 8 BIS : Construit les arguments pour une méthode de contrôleur
-     * Gère @ModelAttribute, Map<String, Object>, @RequestParam et paramètres d'URL
+     * SPRINT 9 : Gère les réponses JSON
+     */
+    private void handleJsonResponse(Method method, Object result, HttpServletResponse response) 
+            throws IOException {
+        
+        JSON jsonAnnotation = method.getAnnotation(JSON.class);
+        
+        // Définir le statut HTTP
+        response.setStatus(jsonAnnotation.status());
+        
+        // Définir le Content-Type
+        response.setContentType(jsonAnnotation.contentType() + "; charset=UTF-8");
+        
+        // Sérialiser le résultat en JSON
+        String jsonResult;
+        if (result == null) {
+            jsonResult = "null";
+        } else if (result instanceof String) {
+            // Si c'est déjà une chaîne, vérifier si c'est déjà du JSON
+            String strResult = (String) result;
+            if (strResult.trim().startsWith("{") || strResult.trim().startsWith("[")) {
+                jsonResult = strResult;
+            } else {
+                jsonResult = "\"" + escapeJsonString(strResult) + "\"";
+            }
+        } else {
+            // Sérialiser l'objet
+            jsonResult = JsonSerializer.toJson(result);
+        }
+        
+        // Écrire la réponse
+        PrintWriter out = response.getWriter();
+        out.print(jsonResult);
+        out.flush();
+        
+        // Log pour le débogage
+        System.out.println("[JSON API] Retour JSON: " + 
+                          method.getDeclaringClass().getSimpleName() + "." + 
+                          method.getName() + " -> " + 
+                          (jsonResult.length() > 100 ? jsonResult.substring(0, 100) + "..." : jsonResult));
+    }
+    
+    /**
+     * SPRINT 9 : Échappe une chaîne pour JSON
+     */
+    private String escapeJsonString(String str) {
+        if (str == null) {
+            return "";
+        }
+        
+        return str.replace("\\", "\\\\")
+                 .replace("\"", "\\\"")
+                 .replace("\n", "\\n")
+                 .replace("\r", "\\r")
+                 .replace("\t", "\\t");
+    }
+
+    /**
+     * Construit les arguments pour une méthode de contrôleur
      */
     private Object[] buildMethodArguments(
             Method method, 
@@ -505,7 +570,7 @@ public class FrontServlet extends HttpServlet {
     }
     
     /**
-     * SPRINT 8 : Crée une Map avec tous les paramètres et attributs de la requête
+     * Crée une Map avec tous les paramètres et attributs de la requête
      */
     private Map<String, Object> createRequestMap(HttpServletRequest request) {
         Map<String, Object> requestMap = new HashMap<>();
@@ -542,7 +607,7 @@ public class FrontServlet extends HttpServlet {
     }
     
     /**
-     * SPRINT 8 : Convertit une valeur de paramètre String en type approprié
+     * Convertit une valeur de paramètre String en type approprié
      */
     private Object convertParameterValue(String value) {
         if (value == null || value.isEmpty()) {
@@ -577,7 +642,7 @@ public class FrontServlet extends HttpServlet {
     }
     
     /**
-     * SPRINT 8 : Retourne la valeur par défaut pour un type donné
+     * Retourne la valeur par défaut pour un type donné
      */
     private Object getDefaultValue(Class<?> type) {
         if (type.isPrimitive()) {
@@ -643,11 +708,18 @@ public class FrontServlet extends HttpServlet {
 
             mappings.addAll(tempMappings);
 
-            System.out.println("\n========== ROUTES ENREGISTRÉES (SPRINT 8 BIS) ==========");
+            System.out.println("\n========== ROUTES ENREGISTRÉES (SPRINT 9 - API REST) ==========");
             for (RouteMapping rm : mappings) {
                 System.out.println("[Route] " + rm.getHttpMethod() + " " + rm.getPattern() + 
                                  " -> " + rm.getMethod().getDeclaringClass().getSimpleName() + 
                                  "." + rm.getMethod().getName());
+                
+                // Indiquer si c'est une API JSON
+                if (rm.getMethod().isAnnotationPresent(JSON.class)) {
+                    JSON json = rm.getMethod().getAnnotation(JSON.class);
+                    System.out.println("       [API REST] Statut: " + json.status() + 
+                                     ", Content-Type: " + json.contentType());
+                }
                 
                 // Afficher les paramètres de la méthode
                 Parameter[] params = rm.getMethod().getParameters();
@@ -674,7 +746,7 @@ public class FrontServlet extends HttpServlet {
                     System.out.println();
                 }
             }
-            System.out.println("===================================================\n");
+            System.out.println("=============================================================\n");
 
         } catch (Exception e) {
             e.printStackTrace();
