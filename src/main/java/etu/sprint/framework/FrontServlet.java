@@ -1,4 +1,4 @@
-// File name: FrontServlet.java (version mise à jour)
+// File name: FrontServlet.java (Sprint 10 - Support Upload Fichier)
 package etu.sprint.framework;
 
 import java.io.*;
@@ -10,27 +10,46 @@ import java.util.regex.*;
 
 import javax.servlet.*;
 import javax.servlet.http.*;
+import javax.servlet.annotation.MultipartConfig;
 
 import etu.sprint.framework.annotation.HttpMethod;
 import etu.sprint.framework.annotation.MyUrl;
 import etu.sprint.framework.annotation.RequestParam;
 import etu.sprint.framework.annotation.ModelAttribute;
 import etu.sprint.framework.annotation.JSON;
+import etu.sprint.framework.annotation.FileParam;
 import etu.sprint.framework.controller.Controller;
 
 /**
  * FrontServlet : Le contrôleur frontal du framework
- * VERSION SPRINT 9 : Support des API REST avec retour JSON
+ * VERSION SPRINT 10 : Support des API REST + Upload de fichiers
  */
+@MultipartConfig(
+    maxFileSize = 1024 * 1024 * 10,      // 10MB max par fichier
+    maxRequestSize = 1024 * 1024 * 50,   // 50MB max par requête
+    fileSizeThreshold = 1024 * 1024      // 1MB avant écriture sur disque
+)
 public class FrontServlet extends HttpServlet {
 
     private List<RouteMapping> mappings = new ArrayList<>();
     private boolean isScanned = false;
+    
+    // Configuration pour l'upload
+    private String uploadTempDir;
 
     @Override
     public void init() throws ServletException {
         super.init();
-        System.out.println("[FrontServlet] Initialisation OK - Sprint 9 avec API REST");
+        
+        // Créer un répertoire temporaire pour l'upload
+        uploadTempDir = getServletContext().getRealPath("/WEB-INF/temp-uploads");
+        File tempDir = new File(uploadTempDir);
+        if (!tempDir.exists()) {
+            tempDir.mkdirs();
+        }
+        
+        System.out.println("[FrontServlet] Initialisation OK - Sprint 10 avec Upload Fichier");
+        System.out.println("[FrontServlet] Répertoire temporaire upload: " + uploadTempDir);
     }
 
     @Override
@@ -85,13 +104,27 @@ public class FrontServlet extends HttpServlet {
             return;
         }
 
+        // --- VÉRIFIER SI C'EST UN UPLOAD DE FICHIER ---
+        Map<String, Object> multipartData = null;
+        if (isMultipartRequest(request)) {
+            try {
+                multipartData = parseMultipartRequest(request);
+                System.out.println("[FrontServlet] Requête multipart détectée, fichiers: " + 
+                                 ((Map<?, ?>) multipartData.get("files")).size());
+            } catch (Exception e) {
+                response.sendError(HttpServletResponse.SC_BAD_REQUEST, 
+                                 "Erreur lors du traitement du fichier: " + e.getMessage());
+                return;
+            }
+        }
+
         // --- EXECUTE CONTROLLER METHOD ---
         try {
             Method method = matched.getMethod();
             Object controller = matched.getController();
 
             // Construction des arguments de la méthode
-            Object[] args = buildMethodArguments(method, extractedParams, request);
+            Object[] args = buildMethodArguments(method, extractedParams, request, multipartData);
 
             Object result = method.invoke(controller, args);
 
@@ -135,6 +168,96 @@ public class FrontServlet extends HttpServlet {
         } catch (Exception e) {
             e.printStackTrace(out);
         }
+    }
+
+    /**
+     * SPRINT 10 : Vérifie si la requête contient des fichiers
+     */
+    private boolean isMultipartRequest(HttpServletRequest request) {
+        String contentType = request.getContentType();
+        return contentType != null && contentType.toLowerCase().startsWith("multipart/form-data");
+    }
+
+    /**
+     * SPRINT 10 : Parse une requête multipart et extrait fichiers + paramètres
+     */
+    private Map<String, Object> parseMultipartRequest(HttpServletRequest request) 
+            throws ServletException, IOException {
+        
+        Map<String, Object> result = new HashMap<>();
+        Map<String, String[]> parameters = new HashMap<>();
+        Map<String, byte[]> files = new HashMap<>();
+        Map<String, String> fileNames = new HashMap<>();
+        Map<String, String> fileContentTypes = new HashMap<>();
+        Map<String, Long> fileSizes = new HashMap<>();
+        
+        try {
+            // Utiliser Servlet 3.0+ Part API
+            Collection<Part> parts = request.getParts();
+            
+            for (Part part : parts) {
+                String fieldName = part.getName();
+                String fileName = part.getSubmittedFileName();
+                
+                if (fileName != null && !fileName.isEmpty()) {
+                    // C'est un fichier
+                    InputStream inputStream = part.getInputStream();
+                    byte[] fileBytes = readAllBytes(inputStream);
+                    
+                    files.put(fieldName, fileBytes);
+                    fileNames.put(fieldName, fileName);
+                    fileContentTypes.put(fieldName, part.getContentType());
+                    fileSizes.put(fieldName, part.getSize());
+                    
+                    System.out.println("[FrontServlet] Fichier reçu: " + fileName + 
+                                     " (" + fileBytes.length + " bytes, " + 
+                                     part.getContentType() + ")");
+                    
+                    // Nettoyer le fichier temporaire
+                    part.delete();
+                    
+                } else {
+                    // C'est un paramètre normal
+                    InputStream inputStream = part.getInputStream();
+                    String value = new String(readAllBytes(inputStream), 
+                                            request.getCharacterEncoding());
+                    parameters.put(fieldName, new String[]{value});
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[FrontServlet] Erreur lors du parsing multipart: " + e.getMessage());
+            
+            // Fallback: traiter comme une requête normale
+            Enumeration<String> paramNames = request.getParameterNames();
+            while (paramNames.hasMoreElements()) {
+                String name = paramNames.nextElement();
+                parameters.put(name, request.getParameterValues(name));
+            }
+        }
+        
+        result.put("parameters", parameters);
+        result.put("files", files);
+        result.put("fileNames", fileNames);
+        result.put("fileContentTypes", fileContentTypes);
+        result.put("fileSizes", fileSizes);
+        
+        return result;
+    }
+    
+    /**
+     * SPRINT 10 : Lit tous les bytes d'un InputStream
+     */
+    private byte[] readAllBytes(InputStream inputStream) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] data = new byte[4096];
+        int nRead;
+        
+        while ((nRead = inputStream.read(data, 0, data.length)) != -1) {
+            buffer.write(data, 0, nRead);
+        }
+        
+        buffer.flush();
+        return buffer.toByteArray();
     }
 
     /**
@@ -196,12 +319,13 @@ public class FrontServlet extends HttpServlet {
     }
 
     /**
-     * Construit les arguments pour une méthode de contrôleur
+     * SPRINT 10 : Construit les arguments pour une méthode de contrôleur avec support fichiers
      */
     private Object[] buildMethodArguments(
             Method method, 
             String[] extractedParams, 
-            HttpServletRequest request) {
+            HttpServletRequest request,
+            Map<String, Object> multipartData) {
         
         Parameter[] parameters = method.getParameters();
         Object[] args = new Object[parameters.length];
@@ -211,39 +335,73 @@ public class FrontServlet extends HttpServlet {
             Parameter param = parameters[i];
             Class<?> paramType = param.getType();
             
-            // Cas 1: @ModelAttribute annotation
-            if (param.isAnnotationPresent(ModelAttribute.class)) {
-                // Si le paramètre est une Map, utiliser createRequestMap
+            // Cas 1: @FileParam annotation (SPRINT 10)
+            if (param.isAnnotationPresent(FileParam.class)) {
+                String paramName = param.getAnnotation(FileParam.class).value();
+                
+                if (multipartData != null) {
+                    Map<String, byte[]> files = (Map<String, byte[]>) multipartData.get("files");
+                    if (files != null && files.containsKey(paramName)) {
+                        args[i] = files.get(paramName);
+                        continue;
+                    }
+                }
+                args[i] = getDefaultValue(paramType);
+            }
+            
+            // Cas 2: @ModelAttribute annotation avec fichiers (SPRINT 10)
+            else if (param.isAnnotationPresent(ModelAttribute.class)) {
+                // Si le paramètre est une Map, utiliser createRequestMap étendu
                 if (Map.class.isAssignableFrom(paramType)) {
-                    Map<String, Object> requestMap = createRequestMap(request);
+                    Map<String, Object> requestMap = createExtendedRequestMap(request, multipartData);
                     args[i] = requestMap;
                 } 
                 // Si c'est une liste ou un tableau
                 else if (paramType.isArray() || List.class.isAssignableFrom(paramType)) {
-                    args[i] = bindToCollection(paramType, request);
+                    args[i] = bindToCollection(paramType, request, multipartData);
                 }
-                // Sinon, binder à un objet
+                // Sinon, binder à un objet avec support fichiers
                 else {
-                    args[i] = bindToObject(paramType, request);
+                    args[i] = bindToObjectWithFiles(paramType, request, multipartData);
                 }
             }
-            // Cas 2: Paramètre Map<String, Object>
+            
+            // Cas 3: Paramètre Map<String, Object> (reçoit tout)
             else if (Map.class.isAssignableFrom(paramType)) {
-                Map<String, Object> requestMap = createRequestMap(request);
+                Map<String, Object> requestMap = createExtendedRequestMap(request, multipartData);
                 args[i] = requestMap;
             }
-            // Cas 3: Paramètre avec annotation @RequestParam
+            
+            // Cas 4: Paramètre avec annotation @RequestParam
             else if (param.isAnnotationPresent(RequestParam.class)) {
                 String paramName = param.getAnnotation(RequestParam.class).value();
-                String value = request.getParameter(paramName);
+                String value = null;
+                
+                // Chercher d'abord dans les paramètres multipart
+                if (multipartData != null) {
+                    Map<String, String[]> multipartParams = 
+                        (Map<String, String[]>) multipartData.get("parameters");
+                    if (multipartParams != null && multipartParams.containsKey(paramName)) {
+                        String[] values = multipartParams.get(paramName);
+                        value = values != null && values.length > 0 ? values[0] : null;
+                    }
+                }
+                
+                // Fallback sur request.getParameter()
+                if (value == null) {
+                    value = request.getParameter(paramName);
+                }
+                
                 args[i] = ParamHandler.convert(value, paramType);
             }
-            // Cas 4: Paramètre extrait de l'URL
+            
+            // Cas 5: Paramètre extrait de l'URL
             else if (extractedIndex < extractedParams.length) {
                 args[i] = ParamHandler.convert(extractedParams[extractedIndex], paramType);
                 extractedIndex++;
             }
-            // Cas 5: Valeur par défaut
+            
+            // Cas 6: Valeur par défaut
             else {
                 args[i] = getDefaultValue(paramType);
             }
@@ -253,13 +411,45 @@ public class FrontServlet extends HttpServlet {
     }
     
     /**
-     * SPRINT 8 BIS : Lie les paramètres de requête à un objet Java
+     * SPRINT 10 : Crée une Map étendue avec paramètres + fichiers
      */
-    private Object bindToObject(Class<?> targetClass, HttpServletRequest request) {
+    private Map<String, Object> createExtendedRequestMap(
+            HttpServletRequest request, 
+            Map<String, Object> multipartData) {
+        
+        Map<String, Object> requestMap = createRequestMap(request);
+        
+        // Ajouter les données multipart si présentes
+        if (multipartData != null) {
+            requestMap.putAll(multipartData);
+            
+            // Ajouter un flag pour indiquer qu'il y a des fichiers
+            requestMap.put("hasFiles", true);
+            
+            // Ajouter un accès facile aux fichiers
+            Map<String, byte[]> files = (Map<String, byte[]>) multipartData.get("files");
+            if (files != null && !files.isEmpty()) {
+                requestMap.put("uploadedFiles", files.keySet());
+            }
+        } else {
+            requestMap.put("hasFiles", false);
+        }
+        
+        return requestMap;
+    }
+    
+    /**
+     * SPRINT 10 : Lie les paramètres de requête à un objet avec support fichiers
+     */
+    private Object bindToObjectWithFiles(
+            Class<?> targetClass, 
+            HttpServletRequest request, 
+            Map<String, Object> multipartData) {
+        
         try {
             Object instance = targetClass.getDeclaredConstructor().newInstance();
             
-            // Pour chaque paramètre de la requête
+            // Pour chaque paramètre de la requête (normaux)
             Enumeration<String> paramNames = request.getParameterNames();
             while (paramNames.hasMoreElements()) {
                 String paramName = paramNames.nextElement();
@@ -276,9 +466,60 @@ public class FrontServlet extends HttpServlet {
                 }
             }
             
+            // Traiter les paramètres multipart (s'il y en a)
+            if (multipartData != null) {
+                Map<String, String[]> multipartParams = 
+                    (Map<String, String[]>) multipartData.get("parameters");
+                
+                if (multipartParams != null) {
+                    for (Map.Entry<String, String[]> entry : multipartParams.entrySet()) {
+                        String paramName = entry.getKey();
+                        String[] values = entry.getValue();
+                        String paramValue = values != null && values.length > 0 ? values[0] : null;
+                        
+                        if (paramName.contains(".")) {
+                            bindNestedProperty(instance, paramName, paramValue);
+                        } else {
+                            bindSimpleProperty(instance, paramName, paramValue);
+                        }
+                    }
+                }
+                
+                // Gérer les fichiers (SPRINT 10)
+                Map<String, byte[]> files = (Map<String, byte[]>) multipartData.get("files");
+                if (files != null) {
+                    for (Map.Entry<String, byte[]> entry : files.entrySet()) {
+                        String fieldName = entry.getKey();
+                        byte[] fileBytes = entry.getValue();
+                        
+                        // Essayer de trouver un setter pour le fichier
+                        String setterName = "set" + capitalize(fieldName);
+                        Method setter = findMethod(targetClass, setterName, byte[].class);
+                        
+                        if (setter != null) {
+                            System.out.println("[FrontServlet] Appel setter " + setterName + 
+                                             " avec " + fileBytes.length + " bytes");
+                            setter.invoke(instance, fileBytes);
+                        } else {
+                            // Si pas de setter spécifique, essayer de stocker dans un champ
+                            try {
+                                Field field = targetClass.getDeclaredField(fieldName);
+                                if (field.getType() == byte[].class) {
+                                    field.setAccessible(true);
+                                    field.set(instance, fileBytes);
+                                }
+                            } catch (NoSuchFieldException e) {
+                                // Ignorer si pas de champ correspondant
+                            }
+                        }
+                    }
+                }
+            }
+            
             return instance;
         } catch (Exception e) {
-            System.err.println("[FrontServlet] Erreur lors du binding de l'objet " + targetClass.getName());
+            System.err.println("[FrontServlet] Erreur lors du binding de l'objet avec fichiers " + 
+                             targetClass.getName());
             e.printStackTrace();
             try {
                 // Retourner une instance vide en cas d'erreur
@@ -388,7 +629,8 @@ public class FrontServlet extends HttpServlet {
                         currentObj = nestedObj;
                     } catch (NoSuchFieldException e) {
                         // Si le champ n'existe pas, créer un objet dynamique ?
-                        System.err.println("[FrontServlet] Propriété non trouvée: " + part + " dans " + currentClass.getName());
+                        System.err.println("[FrontServlet] Propriété non trouvée: " + part + 
+                                         " dans " + currentClass.getName());
                         return;
                     }
                 }
@@ -399,7 +641,8 @@ public class FrontServlet extends HttpServlet {
             bindSimpleProperty(currentObj, lastPart, value);
             
         } catch (Exception e) {
-            System.err.println("[FrontServlet] Erreur lors du binding de la propriété imbriquée: " + propertyPath);
+            System.err.println("[FrontServlet] Erreur lors du binding de la propriété imbriquée: " + 
+                             propertyPath);
             e.printStackTrace();
         }
     }
@@ -444,7 +687,8 @@ public class FrontServlet extends HttpServlet {
                 return Enum.valueOf((Class<Enum>)targetType, value);
             }
         } catch (Exception e) {
-            System.err.println("[FrontServlet] Erreur de conversion: " + value + " -> " + targetType.getName());
+            System.err.println("[FrontServlet] Erreur de conversion: " + value + " -> " + 
+                             targetType.getName());
         }
         
         return value;
@@ -453,17 +697,21 @@ public class FrontServlet extends HttpServlet {
     /**
      * SPRINT 8 BIS : Lie les paramètres à une collection
      */
-    private Object bindToCollection(Class<?> collectionType, HttpServletRequest request) {
+    private Object bindToCollection(
+            Class<?> collectionType, 
+            HttpServletRequest request, 
+            Map<String, Object> multipartData) {
+        
         try {
             // Pour les tableaux
             if (collectionType.isArray()) {
                 Class<?> componentType = collectionType.getComponentType();
                 
                 // Chercher les paramètres qui pourraient correspondre à un tableau
-                // Par exemple, pour "hobbies[]" ou "hobbies"
-                Enumeration<String> paramNames = request.getParameterNames();
                 List<Object> values = new ArrayList<>();
                 
+                // Chercher dans les paramètres normaux
+                Enumeration<String> paramNames = request.getParameterNames();
                 while (paramNames.hasMoreElements()) {
                     String paramName = paramNames.nextElement();
                     
@@ -482,6 +730,27 @@ public class FrontServlet extends HttpServlet {
                         if (baseName.equalsIgnoreCase(collectionType.getSimpleName())) {
                             String paramValue = request.getParameter(paramName);
                             values.add(convertValue(paramValue, componentType));
+                        }
+                    }
+                }
+                
+                // Chercher dans les paramètres multipart
+                if (multipartData != null) {
+                    Map<String, String[]> multipartParams = 
+                        (Map<String, String[]>) multipartData.get("parameters");
+                    
+                    if (multipartParams != null) {
+                        for (Map.Entry<String, String[]> entry : multipartParams.entrySet()) {
+                            String paramName = entry.getKey();
+                            String[] paramValues = entry.getValue();
+                            
+                            if (paramName.equals(collectionType.getSimpleName().toLowerCase())) {
+                                if (paramValues != null) {
+                                    for (String val : paramValues) {
+                                        values.add(convertValue(val, componentType));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -508,6 +777,24 @@ public class FrontServlet extends HttpServlet {
                         String[] paramValues = request.getParameterValues(paramName);
                         if (paramValues != null) {
                             Collections.addAll(list, paramValues);
+                        }
+                    }
+                }
+                
+                // Ajouter depuis multipart
+                if (multipartData != null) {
+                    Map<String, String[]> multipartParams = 
+                        (Map<String, String[]>) multipartData.get("parameters");
+                    
+                    if (multipartParams != null) {
+                        for (Map.Entry<String, String[]> entry : multipartParams.entrySet()) {
+                            String paramName = entry.getKey();
+                            if (paramName.equals(collectionType.getSimpleName().toLowerCase())) {
+                                String[] paramValues = entry.getValue();
+                                if (paramValues != null) {
+                                    Collections.addAll(list, paramValues);
+                                }
+                            }
                         }
                     }
                 }
@@ -708,7 +995,7 @@ public class FrontServlet extends HttpServlet {
 
             mappings.addAll(tempMappings);
 
-            System.out.println("\n========== ROUTES ENREGISTRÉES (SPRINT 9 - API REST) ==========");
+            System.out.println("\n========== ROUTES ENREGISTRÉES (SPRINT 10 - Upload Fichier) ==========");
             for (RouteMapping rm : mappings) {
                 System.out.println("[Route] " + rm.getHttpMethod() + " " + rm.getPattern() + 
                                  " -> " + rm.getMethod().getDeclaringClass().getSimpleName() + 
@@ -727,7 +1014,13 @@ public class FrontServlet extends HttpServlet {
                     System.out.print("       Paramètres: ");
                     for (Parameter p : params) {
                         String type = p.getType().getSimpleName();
-                        if (p.isAnnotationPresent(ModelAttribute.class)) {
+                        
+                        // SPRINT 10: Afficher @FileParam
+                        if (p.isAnnotationPresent(FileParam.class)) {
+                            String name = p.getAnnotation(FileParam.class).value();
+                            System.out.print("@FileParam(\"" + name + "\") " + type + ", ");
+                        }
+                        else if (p.isAnnotationPresent(ModelAttribute.class)) {
                             String name = p.getAnnotation(ModelAttribute.class).value();
                             if (!name.isEmpty()) {
                                 System.out.print("@ModelAttribute(\"" + name + "\") " + type + ", ");
@@ -785,5 +1078,24 @@ public class FrontServlet extends HttpServlet {
             }
         }
         return classes;
+    }
+    
+    @Override
+    public void destroy() {
+        // Nettoyer le répertoire temporaire
+        try {
+            File tempDir = new File(uploadTempDir);
+            if (tempDir.exists()) {
+                for (File file : tempDir.listFiles()) {
+                    if (file.isFile()) {
+                        file.delete();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[FrontServlet] Erreur lors du nettoyage du répertoire temporaire");
+        }
+        
+        super.destroy();
     }
 }
