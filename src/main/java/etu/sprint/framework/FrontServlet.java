@@ -127,6 +127,12 @@ public class FrontServlet extends HttpServlet {
             Method method = matched.getMethod();
             Object controller = matched.getController();
 
+            // SPRINT 11 bis : contrôle d'accès avant exécution
+            if (!isAuthorized(method, request, response)) {
+                // isAuthorized already sent the proper error (401/403)
+                return;
+            }
+
             // Construction des arguments de la méthode
             Object[] args = buildMethodArguments(method, extractedParams, request, multipartData);
 
@@ -1086,6 +1092,47 @@ public class FrontServlet extends HttpServlet {
 
     private String convertPathToRegex(String path) {
         return path.replaceAll("\\{[^/]+}", "([^/]+)");
+    }
+
+    /**
+     * SPRINT 11 bis : Contrôle d'accès (sécurité)
+     * - Vérifie les annotations @AllowAnonymous, @Authenticated, @RolesAllowed sur la méthode
+     * - Supporte aussi les annotations au niveau de la classe
+     */
+    private boolean isAuthorized(Method method, HttpServletRequest request, HttpServletResponse response) throws IOException {
+        // 1) Allow anonymous explicitly
+        if (method.isAnnotationPresent(etu.sprint.framework.annotation.AllowAnonymous.class) ||
+            method.getDeclaringClass().isAnnotationPresent(etu.sprint.framework.annotation.AllowAnonymous.class)) {
+            return true;
+        }
+
+        // 2) RolesAllowed on method or class
+        etu.sprint.framework.annotation.RolesAllowed ra = method.getAnnotation(etu.sprint.framework.annotation.RolesAllowed.class);
+        if (ra == null) ra = method.getDeclaringClass().getAnnotation(etu.sprint.framework.annotation.RolesAllowed.class);
+        if (ra != null) {
+            if (!SecurityUtil.hasAnyRole(request, ra.value())) {
+                response.sendError(HttpServletResponse.SC_FORBIDDEN, "Forbidden: insufficient role");
+                System.out.println("[Security] Access denied (RolesAllowed) to " + method.getName());
+                return false;
+            }
+            return true;
+        }
+
+        // 3) Authenticated required
+        if (method.isAnnotationPresent(etu.sprint.framework.annotation.Authenticated.class) ||
+            method.getDeclaringClass().isAnnotationPresent(etu.sprint.framework.annotation.Authenticated.class)) {
+            String user = SecurityUtil.getCurrentUser(request);
+            if (user == null) {
+                response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Unauthorized: authentication required");
+                System.out.println("[Security] Access denied (Authenticated) to " + method.getName());
+                return false;
+            }
+            return true;
+        }
+
+        // 4) Default policy: allow anonymous but LOG the check (never invoke without check)
+        System.out.println("[Security] No security annotation on " + method.getDeclaringClass().getSimpleName() + "." + method.getName() + " — default ALLOW");
+        return true;
     }
 
     private void scanControllers() {
