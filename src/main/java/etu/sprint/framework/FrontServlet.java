@@ -7,10 +7,14 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.regex.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 
 import javax.servlet.*;
 import javax.servlet.http.*;
-import javax.servlet.annotation.MultipartConfig;
+import javax.servlet.annotation.MultipartConfig; 
 
 import etu.sprint.framework.annotation.HttpMethod;
 import etu.sprint.framework.annotation.MyUrl;
@@ -199,29 +203,50 @@ public class FrontServlet extends HttpServlet {
                 String fieldName = part.getName();
                 String fileName = part.getSubmittedFileName();
                 
+                // Défaut d'encodage pour les champs texte
+                String charset = request.getCharacterEncoding() != null ? request.getCharacterEncoding() : "UTF-8";
+
                 if (fileName != null && !fileName.isEmpty()) {
-                    // C'est un fichier
-                    InputStream inputStream = part.getInputStream();
-                    byte[] fileBytes = readAllBytes(inputStream);
-                    
-                    files.put(fieldName, fileBytes);
+                    // C'est un fichier — stream si volumineux pour éviter OOM
+                    long size = part.getSize();
                     fileNames.put(fieldName, fileName);
                     fileContentTypes.put(fieldName, part.getContentType());
-                    fileSizes.put(fieldName, part.getSize());
-                    
-                    System.out.println("[FrontServlet] Fichier reçu: " + fileName + 
-                                     " (" + fileBytes.length + " bytes, " + 
-                                     part.getContentType() + ")");
-                    
-                    // Nettoyer le fichier temporaire
-                    part.delete();
-                    
+                    fileSizes.put(fieldName, size);
+
+                    // Seuil mémoire (1MB) — conserver petit fichier en mémoire
+                    final long IN_MEMORY_LIMIT = 1024L * 1024L;
+                    if (size > IN_MEMORY_LIMIT) {
+                        // Écrire sur disque dans uploadTempDir
+                        String safeName = sanitizeFilename(System.currentTimeMillis() + "_" + fileName);
+                        File target = new File(uploadTempDir, safeName);
+                        try (InputStream in = part.getInputStream()) {
+                            Files.copy(in, target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                            // Ne pas charger en mémoire — stocker le chemin
+                            files.put(fieldName, null);
+                            // stocker le chemin séparément
+                            if (!result.containsKey("filePaths")) {
+                                result.put("filePaths", new HashMap<String, String>());
+                            }
+                            ((Map<String, String>) result.get("filePaths")).put(fieldName, target.getAbsolutePath());
+
+                            System.out.println("[FrontServlet] Fichier streamé sur disque: " + target.getAbsolutePath() + " (" + size + " bytes)");
+                        }
+                    } else {
+                        try (InputStream in = part.getInputStream()) {
+                            byte[] fileBytes = readAllBytes(in);
+                            files.put(fieldName, fileBytes);
+                            System.out.println("[FrontServlet] Fichier reçu en mémoire: " + fileName + " (" + fileBytes.length + " bytes, " + part.getContentType() + ")");
+                        }
+                    }
+
+                    // Laisser le container gérer les temp files ; ne pas appeler part.delete() ici
+
                 } else {
                     // C'est un paramètre normal
-                    InputStream inputStream = part.getInputStream();
-                    String value = new String(readAllBytes(inputStream), 
-                                            request.getCharacterEncoding());
-                    parameters.put(fieldName, new String[]{value});
+                    try (InputStream inputStream = part.getInputStream()) {
+                        String value = new String(readAllBytes(inputStream), charset);
+                        parameters.put(fieldName, new String[]{value});
+                    }
                 }
             }
         } catch (Exception e) {
@@ -258,6 +283,12 @@ public class FrontServlet extends HttpServlet {
         
         buffer.flush();
         return buffer.toByteArray();
+    }
+
+    // Sanitize filename to avoid path traversal and unsafe chars
+    private String sanitizeFilename(String name) {
+        if (name == null) return "file";
+        return name.replaceAll("[^A-Za-z0-9._-]", "_");
     }
 
     /**
@@ -335,10 +366,73 @@ public class FrontServlet extends HttpServlet {
             Parameter param = parameters[i];
             Class<?> paramType = param.getType();
             
+            // Cas A: Paramètre de type javax.servlet.http.Part (annoté ou non)
+            if (javax.servlet.http.Part.class.isAssignableFrom(paramType)) {
+                String paramName = null;
+
+                if (param.isAnnotationPresent(FileParam.class)) {
+                    paramName = param.getAnnotation(FileParam.class).value();
+                } else {
+                    // tentative: récupérer le nom du paramètre compilé (si -parameters utilisé)
+                    try { paramName = param.getName(); } catch (Exception ignored) { paramName = null; }
+                }
+
+                javax.servlet.http.Part partValue = null;
+                try {
+                    if (paramName != null && !paramName.isEmpty() && !paramName.startsWith("arg")) {
+                        partValue = request.getPart(paramName);
+                        if (partValue == null) {
+                            System.out.println("[FrontServlet] Aucun Part trouvé pour le nom de param '" + paramName + "' — fallback activé");
+                        }
+                    }
+
+                    // fallback : retourner le premier Part qui contient un filename (champ fichier)
+                    if (partValue == null) {
+                        Collection<javax.servlet.http.Part> parts = request.getParts();
+                        for (javax.servlet.http.Part p : parts) {
+                            if (p.getSubmittedFileName() != null && !p.getSubmittedFileName().isEmpty()) {
+                                partValue = p;
+                                System.out.println("[FrontServlet] Injection par fallback → Part trouvé: " + p.getName() + " (" + p.getSubmittedFileName() + ")");
+                                break;
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    System.err.println("[FrontServlet] Impossible de récupérer Part pour paramètre '" + paramName + "' : " + e.getMessage());
+                    partValue = null;
+                }
+
+                args[i] = partValue;
+                continue;
+            }
+
             // Cas 1: @FileParam annotation (SPRINT 10)
             if (param.isAnnotationPresent(FileParam.class)) {
                 String paramName = param.getAnnotation(FileParam.class).value();
-                
+
+                // 2) Injection en tant que java.io.File (si streamé sur disque)
+                if (java.io.File.class.isAssignableFrom(paramType)) {
+                    if (multipartData != null && multipartData.containsKey("filePaths")) {
+                        Map<String, String> filePaths = (Map<String, String>) multipartData.get("filePaths");
+                        if (filePaths != null && filePaths.containsKey(paramName)) {
+                            args[i] = new File(filePaths.get(paramName));
+                            continue;
+                        }
+                    }
+                }
+
+                // 3) Injection en tant que java.nio.file.Path
+                if (java.nio.file.Path.class.isAssignableFrom(paramType)) {
+                    if (multipartData != null && multipartData.containsKey("filePaths")) {
+                        Map<String, String> filePaths = (Map<String, String>) multipartData.get("filePaths");
+                        if (filePaths != null && filePaths.containsKey(paramName)) {
+                            args[i] = Paths.get(filePaths.get(paramName));
+                            continue;
+                        }
+                    }
+                }
+
+                // 4) Compatibilité descendante : byte[] en mémoire
                 if (multipartData != null) {
                     Map<String, byte[]> files = (Map<String, byte[]>) multipartData.get("files");
                     if (files != null && files.containsKey(paramName)) {
@@ -346,6 +440,7 @@ public class FrontServlet extends HttpServlet {
                         continue;
                     }
                 }
+
                 args[i] = getDefaultValue(paramType);
             }
             
@@ -393,6 +488,47 @@ public class FrontServlet extends HttpServlet {
                 }
                 
                 args[i] = ParamHandler.convert(value, paramType);
+            }
+
+            // SPRINT 11: Support pour la session
+            else if (param.isAnnotationPresent(etu.sprint.framework.annotation.SessionParam.class)) {
+                String name = param.getAnnotation(etu.sprint.framework.annotation.SessionParam.class).value();
+                SessionMap sm = new SessionMap(request);
+                Object val = sm.get(name);
+                if (val == null) {
+                    args[i] = getDefaultValue(paramType);
+                } else if (paramType.isAssignableFrom(val.getClass())) {
+                    args[i] = val;
+                } else if (val instanceof String) {
+                    args[i] = ParamHandler.convert((String) val, paramType);
+                } else {
+                    args[i] = val;
+                }
+            }
+
+            // Injecter la Session entière comme Map<String,Object> via @SessionMap ou convention 'session'
+            else if (param.isAnnotationPresent(etu.sprint.framework.annotation.SessionMap.class) ||
+                     (Map.class.isAssignableFrom(paramType) && param.getName().equalsIgnoreCase("session"))) {
+                args[i] = new SessionMap(request);
+            }
+
+            // Injecter HttpSession si demandé
+            else if (javax.servlet.http.HttpSession.class.isAssignableFrom(paramType)) {
+                args[i] = request.getSession(true);
+            }
+
+            // Convention : nom de paramètre correspond à un attribut de session
+            else if (extractedIndex >= extractedParams.length) {
+                // try to resolve from session by parameter name (convention)
+                String pName = null;
+                try { pName = param.getName(); } catch (Exception ignored) { pName = null; }
+                if (pName != null) {
+                    Object sessionVal = new SessionMap(request).get(pName);
+                    if (sessionVal != null && paramType.isAssignableFrom(sessionVal.getClass())) {
+                        args[i] = sessionVal;
+                        continue;
+                    }
+                }
             }
             
             // Cas 5: Paramètre extrait de l'URL
@@ -887,7 +1023,10 @@ public class FrontServlet extends HttpServlet {
         
         // 3. Ajouter les informations de la requête
         requestMap.put("request", request);
-        requestMap.put("session", request.getSession(false));
+        // Exposer la session comme Map<String,Object> (lazy-create on write)
+        requestMap.put("session", new SessionMap(request));
+        // Conserver aussi l'objet HttpSession si besoin
+        requestMap.put("httpSession", request.getSession(false));
         requestMap.put("contextPath", request.getContextPath());
         
         return requestMap;

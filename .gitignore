@@ -13,3 +13,41 @@ lib/sprint-framework.jar
 # Optionnel : ignorer les logs, caches et fichiers temporaires
 *.log
 *.tmp
+
+# ---------------------------------
+# Exclure le contenu webapp (ne PAS envoyer)
+# ---------------------------------
+# Ne pas versionner les sources / vues / ressources déployées de l'application web
+/src/main/webapp/
+
+# Ignorer les fichiers temporaires d'upload et les vues générées
+**/WEB-INF/temp-uploads/
+**/WEB-INF/views/
+
+# Artefacts de déploiement / build locaux
+out/
+build/
+
+# Fichiers de test / utilitaires locaux
+test-*.bat
+test-*.sh
+*.cookie
+*.cookies
+CURL-*.out
+tmp/*
+
+# Cookies / session jars utilisés pour les tests locaux
+*.session
+*.jar
+
+# IDE / OS
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# NOTE: ajouter des exceptions si vous voulez versionner certains fichiers
+# Exemple pour forcer l'ajout d'un fichier malgré .gitignore:
+# git add -f src/main/webapp/some-file
+
