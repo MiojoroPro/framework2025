@@ -78,6 +78,33 @@ if not exist "%TOMCAT_CLASSES%\..\lib" mkdir "%TOMCAT_CLASSES%\..\lib"
 copy /Y lib\sprint-framework.jar "%TOMCAT_CLASSES%\..\lib\"
 echo [SUCCES] Le JAR sprint-framework.jar a été copié dans Tomcat WEB-INF/lib
 
+REM ==========================
+REM  Copier les JSP et fichiers statiques vers Tomcat
+REM ==========================
+set "WEBAPP_SRC=src\main\webapp"
+set "TOMCAT_WEBAPP=%TOMCAT_CLASSES:\WEB-INF\classes=%"
+
+if not exist "%TOMCAT_WEBAPP%" (
+    echo [WARN] Répertoire Tomcat cible introuvable : %TOMCAT_WEBAPP%
+) else (
+    if not exist "%TOMCAT_WEBAPP%\WEB-INF\views" mkdir "%TOMCAT_WEBAPP%\WEB-INF\views"
+
+    echo Copie des JSP de test vers %TOMCAT_WEBAPP%\WEB-INF\views ...
+    copy /Y "%WEBAPP_SRC%\WEB-INF\views\*.jsp" "%TOMCAT_WEBAPP%\WEB-INF\views\" >nul && echo [OK] JSP copiées || echo [ERREUR] Échec de la copie des JSP
+
+    echo Copie des fichiers statiques racine vers %TOMCAT_WEBAPP% ...
+    for %%f in (index.jsp form.html test.html tp2.jpg) do (
+        if exist "%WEBAPP_SRC%\%%f" copy /Y "%WEBAPP_SRC%\%%f" "%TOMCAT_WEBAPP%\" >nul
+    )
+
+    rem Copier web.xml si une version locale existe
+    if exist "%WEBAPP_SRC%\WEB-INF\web.xml" (
+        copy /Y "%WEBAPP_SRC%\WEB-INF\web.xml" "%TOMCAT_WEBAPP%\WEB-INF\" >nul && echo [OK] web.xml copié
+    )
+
+    echo.
+    echo [SUCCES] Vues et ressources déployées dans %TOMCAT_WEBAPP%
+)
 
 pause
 
